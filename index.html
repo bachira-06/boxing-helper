@@ -1,0 +1,732 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Boxing Trainer — Hand Tracking</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0a0a0f; overflow: hidden; font-family: 'Segoe UI', sans-serif; color: #fff; }
+#arena { position: relative; width: 100vw; height: 100vh; }
+#video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+  transform: scaleX(-1); opacity: 0.18; z-index: 0; }
+#overlay { position: absolute; inset: 0; z-index: 1; }
+#hud { position: absolute; top: 0; left: 0; right: 0; z-index: 10;
+  display: flex; align-items: flex-start; justify-content: space-between; padding: 18px 24px; gap: 16px; }
+.stat-box { background: rgba(0,0,0,0.55); border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 10px; padding: 10px 18px; min-width: 110px; }
+.stat-label { font-size: 10px; letter-spacing: 2px; color: rgba(255,255,255,0.4); text-transform: uppercase; }
+.stat-val { font-size: 28px; font-weight: 700; line-height: 1.1; }
+#combo-display { font-size: 12px; letter-spacing: 1px; color: rgba(255,200,0,0.8);
+  background: rgba(0,0,0,0.5); border-radius: 8px; padding: 6px 14px;
+  border: 1px solid rgba(255,200,0,0.2); max-width: 160px; text-align: center; }
+#combo-name { font-size: 15px; font-weight: 600; color: #ffcc00; min-height: 22px; }
+#feedback-banner { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+  z-index: 20; text-align: center; pointer-events: none; }
+#feedback-text { font-size: 56px; font-weight: 800; letter-spacing: 4px;
+  opacity: 0; transition: opacity 0.1s; text-shadow: 0 0 30px currentColor; }
+#start-screen { position: absolute; inset: 0; z-index: 50; background: rgba(0,0,0,0.9);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; }
+#start-screen h1 { font-size: 42px; font-weight: 800; letter-spacing: 6px; color: #ff4444;
+  text-shadow: 0 0 40px #ff4444; }
+#start-screen p { color: rgba(255,255,255,0.5); font-size: 14px; letter-spacing: 1px; max-width: 400px; text-align: center; }
+#start-btn { padding: 16px 48px; background: #ff4444; border: none; color: white;
+  font-size: 16px; font-weight: 700; letter-spacing: 3px; cursor: pointer;
+  border-radius: 6px; text-transform: uppercase; transition: all 0.2s; }
+#start-btn:hover { background: #ff6666; transform: scale(1.04); }
+.mode-btn { padding: 10px 28px; background: transparent; border: 1px solid rgba(255,255,255,0.2);
+  color: rgba(255,255,255,0.7); font-size: 13px; letter-spacing: 2px; cursor: pointer;
+  border-radius: 6px; text-transform: uppercase; transition: all 0.2s; }
+.mode-btn.active { border-color: #ff4444; color: #ff4444; background: rgba(255,68,68,0.1); }
+.mode-btn:hover { border-color: rgba(255,255,255,0.5); color: white; }
+#mode-row { display: flex; gap: 10px; }
+#bottom-bar { position: absolute; bottom: 0; left: 0; right: 0; z-index: 10;
+  display: flex; justify-content: space-between; align-items: flex-end; padding: 16px 24px; }
+#accuracy-bar-wrap { flex: 1; max-width: 300px; }
+#acc-label { font-size: 10px; letter-spacing: 2px; color: rgba(255,255,255,0.4);
+  text-transform: uppercase; margin-bottom: 6px; }
+#acc-bar-bg { height: 6px; background: rgba(255,255,255,0.1); border-radius: 3px; }
+#acc-bar { height: 6px; background: #44ff88; border-radius: 3px; width: 0%; transition: width 0.4s; }
+#punch-history { display: flex; gap: 6px; align-items: flex-end; }
+.ph-dot { width: 8px; height: 8px; border-radius: 50%; opacity: 0.8; }
+#session-timer { font-size: 32px; font-weight: 700; color: rgba(255,255,255,0.6); letter-spacing: 2px; }
+#round-display { font-size: 11px; letter-spacing: 2px; color: rgba(255,255,255,0.35); text-align: right; }
+#rest-overlay { position: absolute; inset: 0; z-index: 30; background: rgba(0,0,0,0.8);
+  display: none; flex-direction: column; align-items: center; justify-content: center; gap: 10px; }
+#rest-overlay h2 { font-size: 36px; letter-spacing: 4px; color: #44aaff; }
+#rest-count { font-size: 80px; font-weight: 800; color: white; }
+#speed-indicator { position: absolute; right: 24px; top: 50%; transform: translateY(-50%);
+  z-index: 10; text-align: center; }
+#speed-meter { width: 8px; height: 180px; background: rgba(255,255,255,0.08);
+  border-radius: 4px; margin: 0 auto; position: relative; overflow: hidden; }
+#speed-fill { position: absolute; bottom: 0; left: 0; right: 0; background: #ff4444;
+  border-radius: 4px; transition: height 0.1s; }
+#speed-label { font-size: 9px; letter-spacing: 1px; color: rgba(255,255,255,0.3);
+  text-transform: uppercase; margin-top: 6px; }
+</style>
+</head>
+<body>
+<div id="arena">
+  <video id="video" autoplay muted playsinline></video>
+  <canvas id="overlay"></canvas>
+
+  <div id="hud">
+    <div class="stat-box">
+      <div class="stat-label">Punches</div>
+      <div class="stat-val" id="punch-count" style="color:#ff4444">0</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-label">Accuracy</div>
+      <div class="stat-val" id="accuracy-val" style="color:#44ff88">--%</div>
+    </div>
+    <div style="text-align:center">
+      <div id="combo-display">
+        <div class="stat-label" style="margin-bottom:4px">Combo</div>
+        <div id="combo-name">—</div>
+      </div>
+    </div>
+    <div class="stat-box" style="text-align:right">
+      <div class="stat-label">Streak</div>
+      <div class="stat-val" id="streak-val" style="color:#ffcc00">0</div>
+    </div>
+    <div class="stat-box" style="text-align:right">
+      <div class="stat-label">Score</div>
+      <div class="stat-val" id="score-val" style="color:#aa44ff">0</div>
+    </div>
+  </div>
+
+  <div id="speed-indicator">
+    <div id="speed-meter"><div id="speed-fill" style="height:0%"></div></div>
+    <div id="speed-label">Speed</div>
+  </div>
+
+  <div id="feedback-banner">
+    <div id="feedback-text">PERFECT!</div>
+  </div>
+
+  <div id="bottom-bar">
+    <div id="accuracy-bar-wrap">
+      <div id="acc-label">Session accuracy</div>
+      <div id="acc-bar-bg"><div id="acc-bar"></div></div>
+    </div>
+    <div id="punch-history"></div>
+    <div style="text-align:right">
+      <div id="session-timer">0:00</div>
+      <div id="round-display">ROUND 1</div>
+    </div>
+  </div>
+
+  <div id="rest-overlay">
+    <h2>REST</h2>
+    <div id="rest-count">10</div>
+    <div style="color:rgba(255,255,255,0.4);font-size:14px;letter-spacing:2px">NEXT ROUND STARTING</div>
+  </div>
+
+  <div id="start-screen">
+    <h1>BOXING TRAINER</h1>
+    <p>Your webcam tracks your fists in real time. Punch the targets as they appear. Speed, accuracy, and combos are all scored.</p>
+    <div id="mode-row">
+      <button class="mode-btn active" id="mode-beginner" onclick="setMode('beginner')">Beginner</button>
+      <button class="mode-btn" id="mode-fighter" onclick="setMode('fighter')">Fighter</button>
+      <button class="mode-btn" id="mode-savage" onclick="setMode('savage')">Savage</button>
+    </div>
+    <button id="start-btn" onclick="startApp()">Activate Camera</button>
+    <p style="font-size:12px;opacity:0.3">Webcam required · Works best with good lighting</p>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.min.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1640029074/camera_utils.js" crossorigin="anonymous"></script>
+
+<script>
+const canvas = document.getElementById('overlay');
+const ctx = canvas.getContext('2d');
+const video = document.getElementById('video');
+
+let W, H;
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+let mode = 'beginner';
+const MODES = {
+  beginner: { speed: 2200, targetSize: 70, maxTargets: 1, comboChance: 0 },
+  fighter:  { speed: 1500, targetSize: 55, maxTargets: 2, comboChance: 0.3 },
+  savage:   { speed: 900,  targetSize: 42, maxTargets: 3, comboChance: 0.6 },
+};
+
+function setMode(m) {
+  mode = m;
+  document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('mode-' + m).classList.add('active');
+}
+
+let targets = [], trails = [], impacts = [], floatingTexts = [];
+let totalPunches = 0, hits = 0, misses = 0, streak = 0, score = 0;
+let sessionStart = 0, running = false;
+let round = 1, roundTimer = 0, inRest = false;
+let lastHandPos = { left: null, right: null };
+let handVel = { left: 0, right: 0 };
+let handPositions = { left: [], right: [] };
+let punchCooldown = { left: 0, right: 0 };
+let punchHistory = [];
+let comboQueue = [], comboIndex = 0, comboTimer = 0;
+let animFrame;
+
+const COMBOS = [
+  { name: 'JAB JAB', seq: ['left','left'] },
+  { name: 'JAB CROSS', seq: ['left','right'] },
+  { name: 'CROSS HOOK', seq: ['right','left'] },
+  { name: '1-2-1', seq: ['left','right','left'] },
+  { name: 'UPPERCUT', seq: ['right','right'] },
+  { name: '1-2-HOOK', seq: ['left','right','left'] },
+];
+
+const FEEDBACK = [
+  { word: 'PERFECT!', color: '#44ff88', minAcc: 95 },
+  { word: 'GREAT!', color: '#ffcc00', minAcc: 80 },
+  { word: 'NICE!', color: '#44aaff', minAcc: 60 },
+  { word: 'HIT!', color: '#ffffff', minAcc: 0 },
+];
+
+class Target {
+  constructor() {
+    const cfg = MODES[mode];
+    this.r = cfg.targetSize;
+    const margin = this.r + 60;
+    this.x = margin + Math.random() * (W - margin * 2);
+    this.y = 100 + Math.random() * (H - 200);
+    this.born = performance.now();
+    this.ttl = cfg.speed;
+    this.hit = false;
+    this.hitTime = 0;
+    this.hitX = 0;
+    this.hitY = 0;
+    this.accuracy = 0;
+    this.pulse = Math.random() * Math.PI * 2;
+    this.type = Math.random() < 0.5 ? 'L' : 'R';
+    this.color = this.type === 'L' ? '#ff4444' : '#4488ff';
+    this.glowColor = this.type === 'L' ? 'rgba(255,68,68,' : 'rgba(68,136,255,';
+    this.hue = this.type === 'L' ? 0 : 210;
+    this.comboLabel = null;
+    this.vx = (Math.random() - 0.5) * (mode === 'savage' ? 2.5 : mode === 'fighter' ? 1.2 : 0);
+    this.vy = (Math.random() - 0.5) * (mode === 'savage' ? 1.5 : mode === 'fighter' ? 0.8 : 0);
+  }
+
+  update(dt) {
+    if (this.hit) return;
+    this.x += this.vx;
+    this.y += this.vy;
+    if (this.x < this.r || this.x > W - this.r) this.vx *= -1;
+    if (this.y < this.r + 60 || this.y > H - this.r - 50) this.vy *= -1;
+    this.pulse += dt * 0.004;
+    const age = (performance.now() - this.born) / this.ttl;
+    if (age > 1 && !this.hit) {
+      misses++;
+      streak = 0;
+      updateHUD();
+      addPunchHistory(false);
+      this.hit = true; this.hitTime = performance.now();
+    }
+  }
+
+  draw(now) {
+    const age = Math.min((now - this.born) / this.ttl, 1);
+    const pulse = Math.sin(this.pulse) * 0.12 + 1;
+
+    if (this.hit) {
+      const t = (now - this.hitTime) / 400;
+      if (t > 1) return false;
+      const r = this.r * (1 + t * 1.8);
+      const alpha = 1 - t;
+      ctx.save();
+      ctx.globalAlpha = alpha * 0.6;
+      ctx.strokeStyle = this.color;
+      ctx.lineWidth = 3 * (1 - t);
+      ctx.beginPath(); ctx.arc(this.x, this.y, r, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+      return true;
+    }
+
+    const urgency = age > 0.7 ? (age - 0.7) / 0.3 : 0;
+    const r = this.r * pulse;
+
+    ctx.save();
+    // Urgency flash
+    if (urgency > 0) {
+      ctx.globalAlpha = urgency * 0.3 * (Math.sin(now * 0.02) * 0.5 + 0.5);
+      ctx.fillStyle = this.color;
+      ctx.beginPath(); ctx.arc(this.x, this.y, r * 1.6, 0, Math.PI * 2); ctx.fill();
+    }
+
+    // Countdown arc
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+    ctx.lineWidth = 5;
+    ctx.beginPath(); ctx.arc(this.x, this.y, r + 12, -Math.PI/2, -Math.PI/2 + Math.PI * 2, false); ctx.stroke();
+    ctx.strokeStyle = this.color;
+    ctx.lineWidth = 5;
+    ctx.lineCap = 'round';
+    const end = -Math.PI/2 + Math.PI * 2 * (1 - age);
+    ctx.beginPath(); ctx.arc(this.x, this.y, r + 12, -Math.PI/2, end, false); ctx.stroke();
+
+    // Outer glow
+    const grd = ctx.createRadialGradient(this.x, this.y, r * 0.4, this.x, this.y, r * 1.2);
+    grd.addColorStop(0, this.glowColor + '0.5)');
+    grd.addColorStop(1, this.glowColor + '0)');
+    ctx.fillStyle = grd; ctx.globalAlpha = 0.7;
+    ctx.beginPath(); ctx.arc(this.x, this.y, r * 1.2, 0, Math.PI * 2); ctx.fill();
+
+    // Main circle
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = this.glowColor + '0.15)';
+    ctx.strokeStyle = this.color;
+    ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(this.x, this.y, r, 0, Math.PI * 2);
+    ctx.fill(); ctx.stroke();
+
+    // Inner cross
+    ctx.strokeStyle = this.color; ctx.lineWidth = 1.5; ctx.globalAlpha = 0.6;
+    const cr = r * 0.45;
+    ctx.beginPath(); ctx.moveTo(this.x - cr, this.y); ctx.lineTo(this.x + cr, this.y); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(this.x, this.y - cr); ctx.lineTo(this.x, this.y + cr); ctx.stroke();
+
+    // Label
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = this.color;
+    ctx.font = `700 ${r * 0.55}px sans-serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(this.type, this.x, this.y);
+
+    // Combo label
+    if (this.comboLabel) {
+      ctx.font = '600 11px sans-serif';
+      ctx.fillStyle = '#ffcc00';
+      ctx.globalAlpha = 0.9;
+      ctx.fillText(this.comboLabel, this.x, this.y - r - 18);
+    }
+
+    ctx.restore();
+    return true;
+  }
+}
+
+class Trail {
+  constructor(x, y, hand) {
+    this.pts = [{ x, y, t: performance.now() }];
+    this.hand = hand;
+    this.color = hand === 'left' ? '#ff6644' : '#4488ff';
+    this.alive = true;
+  }
+  add(x, y) { this.pts.push({ x, y, t: performance.now() }); if (this.pts.length > 22) this.pts.shift(); }
+  draw(now) {
+    const alive = this.pts.some(p => now - p.t < 350);
+    if (!alive) { this.alive = false; return; }
+    if (this.pts.length < 2) return;
+    ctx.save();
+    for (let i = 1; i < this.pts.length; i++) {
+      const p0 = this.pts[i-1], p1 = this.pts[i];
+      const age = (now - p1.t) / 350;
+      if (age > 1) continue;
+      const t = i / this.pts.length;
+      ctx.globalAlpha = (1 - age) * t * 0.75;
+      ctx.strokeStyle = this.color;
+      ctx.lineWidth = t * 12 * (1 - age * 0.5);
+      ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y); ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+class Impact {
+  constructor(x, y, accuracy, hand) {
+    this.x = x; this.y = y; this.acc = accuracy;
+    this.color = accuracy > 85 ? '#44ff88' : accuracy > 65 ? '#ffcc00' : '#ff8844';
+    this.born = performance.now();
+    this.particles = Array.from({length: 18}, () => ({
+      angle: Math.random() * Math.PI * 2,
+      speed: 2 + Math.random() * 6,
+      size: 2 + Math.random() * 5,
+      decay: 0.85 + Math.random() * 0.1,
+      vx: 0, vy: 0,
+    }));
+    this.particles.forEach(p => { p.vx = Math.cos(p.angle) * p.speed; p.vy = Math.sin(p.angle) * p.speed; });
+    this.rings = [{ r: 0, maxR: 80, speed: 3 }, { r: 0, maxR: 50, speed: 5 }];
+  }
+  draw(now) {
+    const age = (now - this.born) / 600;
+    if (age > 1) return false;
+    ctx.save();
+    this.rings.forEach(ring => {
+      ring.r += ring.speed;
+      if (ring.r > ring.maxR) return;
+      const a = 1 - ring.r / ring.maxR;
+      ctx.globalAlpha = a * 0.7;
+      ctx.strokeStyle = this.color;
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(this.x, this.y, ring.r, 0, Math.PI * 2); ctx.stroke();
+    });
+    this.particles.forEach(p => {
+      p.vx *= p.decay; p.vy *= p.decay; p.vy += 0.15;
+      p.x = (p.x || this.x) + p.vx; p.y = (p.y || this.y) + p.vy;
+      ctx.globalAlpha = (1 - age) * 0.9;
+      ctx.fillStyle = this.color;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.size * (1 - age * 0.5), 0, Math.PI * 2); ctx.fill();
+    });
+    ctx.restore();
+    return true;
+  }
+}
+
+class FloatingText {
+  constructor(x, y, text, color) {
+    this.x = x; this.y = y; this.text = text; this.color = color;
+    this.born = performance.now(); this.vy = -2;
+  }
+  draw(now) {
+    const age = (now - this.born) / 900;
+    if (age > 1) return false;
+    this.y += this.vy; this.vy *= 0.97;
+    ctx.save();
+    ctx.globalAlpha = age < 0.3 ? age / 0.3 : 1 - (age - 0.3) / 0.7;
+    ctx.fillStyle = this.color;
+    ctx.font = `700 22px sans-serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(this.text, this.x, this.y);
+    ctx.restore();
+    return true;
+  }
+}
+
+let handTrails = { left: null, right: null };
+
+function toScreen(norm, hand) {
+  // Mirrors X for mirrored video
+  const x = (1 - norm.x) * W;
+  const y = norm.y * H;
+  return { x, y };
+}
+
+function processHands(results) {
+  if (!running) return;
+  const now = performance.now();
+
+  const detected = { left: false, right: false };
+  if (results.multiHandLandmarks) {
+    results.multiHandLandmarks.forEach((lm, idx) => {
+      const rawLabel = results.multiHandedness[idx]?.label || 'Right';
+      const side = rawLabel === 'Right' ? 'left' : 'right'; // mirrored
+
+      const knuckle = lm[9]; // middle knuckle — good punch proxy
+      const wrist = lm[0];
+      const sc = toScreen(knuckle, side);
+
+      if (!handPositions[side]) handPositions[side] = [];
+      handPositions[side].push({ ...sc, t: now });
+      if (handPositions[side].length > 8) handPositions[side].shift();
+
+      // Velocity from recent positions
+      if (handPositions[side].length >= 3) {
+        const old = handPositions[side][0];
+        const dx = sc.x - old.x, dy = sc.y - old.y;
+        const dt = now - old.t;
+        const vel = dt > 0 ? Math.hypot(dx, dy) / dt * 16 : 0;
+        handVel[side] = vel;
+      }
+
+      // Trail
+      if (!handTrails[side] || !handTrails[side].alive) handTrails[side] = new Trail(sc.x, sc.y, side);
+      else handTrails[side].add(sc.x, sc.y);
+
+      detected[side] = true;
+      lastHandPos[side] = sc;
+
+      // Punch detection — fast forward movement
+      const PUNCH_VEL = 12;
+      if (handVel[side] > PUNCH_VEL && punchCooldown[side] <= 0) {
+        punchCooldown[side] = 180; // ms cooldown
+        registerPunch(sc.x, sc.y, side, handVel[side]);
+      }
+    });
+  }
+  if (!detected.left) { handVel.left = 0; lastHandPos.left = null; }
+  if (!detected.right) { handVel.right = 0; lastHandPos.right = null; }
+}
+
+function registerPunch(px, py, hand, vel) {
+  totalPunches++;
+  let bestTarget = null, bestDist = Infinity;
+  for (const t of targets) {
+    if (t.hit) continue;
+    const d = Math.hypot(px - t.x, py - t.y);
+    if (d < bestDist) { bestDist = d; bestTarget = t; }
+  }
+
+  const cfg = MODES[mode];
+  if (bestTarget && bestDist < bestTarget.r * 2.2) {
+    const accuracy = Math.max(0, Math.min(100, Math.round(100 * (1 - bestDist / (bestTarget.r * 2.2)))));
+    hits++;
+    streak++;
+    const spd = Math.min(vel / 30, 1);
+    const bonus = streak >= 5 ? 2 : streak >= 3 ? 1.5 : 1;
+    const pts = Math.round((accuracy * 0.8 + spd * 20) * bonus);
+    score += pts;
+    bestTarget.hit = true; bestTarget.hitTime = performance.now();
+    impacts.push(new Impact(px, py, accuracy, hand));
+    floatingTexts.push(new FloatingText(bestTarget.x, bestTarget.y - 30, '+' + pts, '#ffcc00'));
+
+    const fb = FEEDBACK.find(f => accuracy >= f.minAcc);
+    if (fb) showFeedback(fb.word, fb.color);
+
+    addPunchHistory(true, accuracy);
+    updateHUD();
+
+    // Combo check
+    if (comboQueue.length > 0) {
+      const expected = comboQueue[comboIndex];
+      if (hand === expected) {
+        comboIndex++;
+        if (comboIndex >= comboQueue.length) {
+          const bonusPts = comboQueue.length * 50;
+          score += bonusPts;
+          floatingTexts.push(new FloatingText(W/2, H/2 - 60, 'COMBO +' + bonusPts, '#ff44ff'));
+          comboQueue = []; comboIndex = 0; comboTimer = 0;
+          document.getElementById('combo-name').textContent = '—';
+        }
+      } else {
+        comboQueue = []; comboIndex = 0; comboTimer = 0;
+        document.getElementById('combo-name').textContent = '—';
+      }
+    }
+  } else {
+    // Miss on punch
+    streak = Math.max(0, streak - 1);
+    addPunchHistory(false);
+    updateHUD();
+  }
+}
+
+let feedbackTimeout;
+function showFeedback(word, color) {
+  const el = document.getElementById('feedback-text');
+  el.textContent = word;
+  el.style.color = color;
+  el.style.opacity = '1';
+  clearTimeout(feedbackTimeout);
+  feedbackTimeout = setTimeout(() => { el.style.opacity = '0'; }, 500);
+}
+
+function addPunchHistory(hit, accuracy) {
+  punchHistory.push({ hit, accuracy: accuracy || 0 });
+  if (punchHistory.length > 12) punchHistory.shift();
+  const el = document.getElementById('punch-history');
+  el.innerHTML = '';
+  punchHistory.forEach(p => {
+    const d = document.createElement('div');
+    d.className = 'ph-dot';
+    d.style.background = p.hit ? (p.accuracy > 80 ? '#44ff88' : p.accuracy > 60 ? '#ffcc00' : '#ff8844') : '#ff3333';
+    d.style.width = d.style.height = p.hit ? '10px' : '7px';
+    el.appendChild(d);
+  });
+}
+
+function updateHUD() {
+  document.getElementById('punch-count').textContent = totalPunches;
+  const acc = totalPunches > 0 ? Math.round(hits / totalPunches * 100) : 0;
+  document.getElementById('accuracy-val').textContent = acc + '%';
+  document.getElementById('accuracy-val').style.color = acc > 75 ? '#44ff88' : acc > 50 ? '#ffcc00' : '#ff4444';
+  document.getElementById('streak-val').textContent = streak;
+  document.getElementById('streak-val').style.color = streak >= 5 ? '#ff44ff' : streak >= 3 ? '#ffcc00' : '#ffffff';
+  document.getElementById('score-val').textContent = score.toLocaleString();
+  document.getElementById('acc-bar').style.width = acc + '%';
+  document.getElementById('acc-bar').style.background = acc > 75 ? '#44ff88' : acc > 50 ? '#ffcc00' : '#ff4444';
+}
+
+let spawnTimer = 0;
+let lastTime = 0;
+function gameLoop(now) {
+  if (!running) return;
+  animFrame = requestAnimationFrame(gameLoop);
+  const dt = now - lastTime; lastTime = now;
+
+  // Cooldowns
+  punchCooldown.left = Math.max(0, punchCooldown.left - dt);
+  punchCooldown.right = Math.max(0, punchCooldown.right - dt);
+
+  // Combo timer
+  if (comboQueue.length > 0) { comboTimer -= dt; if (comboTimer <= 0) { comboQueue = []; comboIndex = 0; document.getElementById('combo-name').textContent = '—'; } }
+
+  // Session timer
+  const elapsed = Math.floor((now - sessionStart) / 1000);
+  const m = Math.floor(elapsed / 60), s = elapsed % 60;
+  document.getElementById('session-timer').textContent = m + ':' + String(s).padStart(2, '0');
+
+  // Round (90s per round)
+  const roundTime = 90;
+  roundTimer += dt / 1000;
+  if (roundTimer >= roundTime && !inRest) startRest();
+
+  // Spawn targets
+  const cfg = MODES[mode];
+  const activeTargets = targets.filter(t => !t.hit || (now - t.hitTime < 400));
+  spawnTimer -= dt;
+  if (spawnTimer <= 0 && activeTargets.length < cfg.maxTargets) {
+    spawnTimer = 300 + Math.random() * 500;
+    const t = new Target();
+    // Combo assignment
+    if (Math.random() < cfg.comboChance && comboQueue.length === 0) {
+      const combo = COMBOS[Math.floor(Math.random() * COMBOS.length)];
+      comboQueue = combo.seq;
+      comboIndex = 0;
+      comboTimer = combo.seq.length * (cfg.speed * 0.9);
+      t.type = combo.seq[0].toUpperCase()[0] === 'L' ? 'L' : 'R';
+      t.color = t.type === 'L' ? '#ff4444' : '#4488ff';
+      t.comboLabel = combo.name;
+      document.getElementById('combo-name').textContent = combo.name;
+    }
+    targets.push(t);
+  }
+
+  // Speed indicator
+  const maxVel = Math.max(handVel.left || 0, handVel.right || 0);
+  const speedPct = Math.min(100, (maxVel / 35) * 100);
+  document.getElementById('speed-fill').style.height = speedPct + '%';
+  document.getElementById('speed-fill').style.background =
+    speedPct > 70 ? '#ff4444' : speedPct > 40 ? '#ffcc00' : '#44aaff';
+
+  // Draw
+  ctx.clearRect(0, 0, W, H);
+
+  // Background vignette
+  const vg = ctx.createRadialGradient(W/2, H/2, H*0.2, W/2, H/2, H*0.8);
+  vg.addColorStop(0, 'rgba(0,0,0,0)');
+  vg.addColorStop(1, 'rgba(0,0,0,0.5)');
+  ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
+
+  // Grid lines (subtle)
+  ctx.strokeStyle = 'rgba(255,255,255,0.025)'; ctx.lineWidth = 1;
+  for (let x = 0; x < W; x += 80) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+  for (let y = 0; y < H; y += 80) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+
+  // Trails
+  Object.values(handTrails).forEach(t => { if (t) t.draw(now); });
+
+  // Targets
+  targets = targets.filter(t => { t.update(dt); return t.draw(now) !== false; });
+
+  // Impacts
+  impacts = impacts.filter(i => i.draw(now) !== false);
+
+  // Floating texts
+  floatingTexts = floatingTexts.filter(f => f.draw(now) !== false);
+
+  // Hand markers
+  ['left', 'right'].forEach(side => {
+    const pos = lastHandPos[side];
+    if (!pos) return;
+    const vel = handVel[side];
+    const active = vel > 8;
+    const col = side === 'left' ? '#ff4444' : '#4488ff';
+    const r = active ? 28 : 20;
+    ctx.save();
+    ctx.globalAlpha = active ? 1 : 0.6;
+    ctx.strokeStyle = col;
+    ctx.lineWidth = active ? 3 : 2;
+    ctx.beginPath(); ctx.arc(pos.x, pos.y, r, 0, Math.PI * 2); ctx.stroke();
+    if (active) {
+      ctx.globalAlpha = 0.25;
+      ctx.fillStyle = col;
+      ctx.beginPath(); ctx.arc(pos.x, pos.y, r * 1.6, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = col;
+    ctx.font = '700 11px sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(side === 'left' ? 'L' : 'R', pos.x, pos.y);
+    ctx.restore();
+  });
+}
+
+function startRest() {
+  inRest = true;
+  const overlay = document.getElementById('rest-overlay');
+  overlay.style.display = 'flex';
+  let count = 10;
+  document.getElementById('rest-count').textContent = count;
+  const iv = setInterval(() => {
+    count--;
+    document.getElementById('rest-count').textContent = count;
+    if (count <= 0) {
+      clearInterval(iv);
+      overlay.style.display = 'none';
+      round++;
+      roundTimer = 0;
+      inRest = false;
+      document.getElementById('round-display').textContent = 'ROUND ' + round;
+      targets = [];
+      spawnTimer = 0;
+    }
+  }, 1000);
+}
+
+let mpHands, mpCamera;
+
+async function startApp() {
+  document.getElementById('start-screen').style.display = 'none';
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: 1280, height: 720 } });
+    video.srcObject = stream;
+    await video.play();
+  } catch(e) {
+    alert('Camera access needed for hand tracking. Please allow camera access and reload.');
+    document.getElementById('start-screen').style.display = 'flex';
+    return;
+  }
+
+  try {
+    mpHands = new Hands({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/${f}` });
+    mpHands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.7, minTrackingConfidence: 0.65 });
+    mpHands.onResults(processHands);
+    mpCamera = new Camera(video, {
+      onFrame: async () => { if (mpHands) await mpHands.send({ image: video }); },
+      width: 1280, height: 720,
+    });
+    await mpCamera.start();
+  } catch(e) {
+    console.warn('MediaPipe failed, entering demo mode', e);
+    startDemoMode();
+  }
+
+  running = true;
+  sessionStart = performance.now();
+  lastTime = performance.now();
+  requestAnimationFrame(gameLoop);
+}
+
+function startDemoMode() {
+  let t = 0;
+  setInterval(() => {
+    t += 0.05;
+    const lx = 0.3 + Math.sin(t * 0.8) * 0.15;
+    const ly = 0.4 + Math.cos(t * 0.6) * 0.2;
+    const rx = 0.7 + Math.cos(t * 0.9) * 0.15;
+    const ry = 0.4 + Math.sin(t * 0.7) * 0.2;
+    const punch = Math.sin(t * 3) > 0.7;
+    const mockResults = {
+      multiHandLandmarks: [
+        Array.from({length:21}, (_, i) => i === 9 ? {x: lx, y: ly, z: 0} : {x: lx + (Math.random()-0.5)*0.05, y: ly + (Math.random()-0.5)*0.05, z:0}),
+        Array.from({length:21}, (_, i) => i === 9 ? {x: rx, y: ry, z: 0} : {x: rx + (Math.random()-0.5)*0.05, y: ry + (Math.random()-0.5)*0.05, z:0}),
+      ],
+      multiHandedness: [{ label: 'Right' }, { label: 'Left' }],
+    };
+    if (punch) { mockResults.multiHandLandmarks[0][9].x += 0.05 * Math.sin(t * 5); }
+    processHands(mockResults);
+  }, 33);
+}
+</script>
+</body>
+</html>
